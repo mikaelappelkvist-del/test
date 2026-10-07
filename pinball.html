@@ -148,6 +148,8 @@ function step(dt) {
   // Holding the ball on the plunger
   if (ball.inLane && ball.y > 670) { ball.y = 670; ball.vy = 0; ball.vx = 0; }
   if (ball.x < LANE_X - BALL_R) ball.inLane = false;
+  // A ball that rolls back into the launch lane lands on the plunger again
+  if (ball.x > LANE_X + BALL_R) ball.inLane = true;
 
   for (const w of walls) collideSegment(w[0], w[1], w[2], w[3], 2, 0.5);
 

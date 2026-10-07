@@ -4,16 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Simple Pinball</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&display=swap">
 <style>
-  body { margin: 0; background: #111; color: #eee; font-family: sans-serif;
-         display: flex; flex-direction: column; align-items: center; }
-  canvas { background: #0b1a33; margin-top: 10px; max-width: 100%; }
-  p { margin: 8px; font-size: 14px; color: #aaa; }
+  /* Layout: one-screen arcade cabinet; playfield on top, control deck below. Single dark look by design. */
+  :root {
+    --cabinet: #07101f; --playfield: #0b1a33; --rail: #7fb3ff;
+    --flipper: #ffcc33; --ink: #e8eefc; --muted: #8fa3c7;
+    --font: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--cabinet); color: var(--ink); font-family: var(--font);
+         display: flex; flex-direction: column; align-items: center; gap: 10px;
+         padding-inline: 16px; padding-block: 10px; box-sizing: border-box; }
+  canvas { background: var(--playfield); height: min(700px, calc(100% - 120px)); width: auto;
+           max-width: 100%; aspect-ratio: 400 / 700; object-fit: contain; border-radius: 6px;
+           touch-action: none; outline: none; }
+  canvas:focus-visible { box-shadow: 0 0 0 2px var(--rail); }
+  .deck { display: flex; gap: 8px; width: min(400px, 100%); }
+  .deck button { flex: 1; font: 700 15px var(--font); letter-spacing: 0.06em; text-transform: uppercase;
+                 padding-block: 14px; border-radius: 8px; border: 2px solid var(--rail);
+                 background: transparent; color: var(--ink); touch-action: none; user-select: none;
+                 -webkit-user-select: none; cursor: pointer; }
+  .deck button.flip { border-color: var(--flipper); color: var(--flipper); }
+  .deck button.active { background: var(--flipper); color: var(--cabinet); }
+  .deck button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  p { margin: 0; font-size: 13px; color: var(--muted); text-align: center; max-width: 400px; }
 </style>
 </head>
 <body>
-<canvas id="c" width="400" height="700"></canvas>
-<p>Space: hold to charge plunger, release to launch &middot; Z / Left: left flipper &middot; M / Right: right flipper &middot; R: restart</p>
+<canvas id="c" width="400" height="700" tabindex="0" aria-label="Pinball table"></canvas>
+<div class="deck">
+  <button type="button" class="flip" id="btn-left">Left</button>
+  <button type="button" id="btn-launch">Launch</button>
+  <button type="button" class="flip" id="btn-right">Right</button>
+</div>
+<p>Keys: Space hold and release to launch &middot; Z / &larr; left flipper &middot; M / &rarr; right flipper &middot; R restart</p>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -210,14 +236,15 @@ function draw() {
   ctx.fillStyle = '#ddd'; ctx.fill();
 
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 18px sans-serif';
+  ctx.font = '700 18px "Chakra Petch", sans-serif';
   ctx.fillText('Score: ' + score, 30, 50);
-  ctx.fillText('Balls: ' + lives, 250, 50);
+  ctx.fillText('Balls: ' + lives, 270, 50);
   if (gameOver) {
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 280, W, 120);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px sans-serif';
-    ctx.fillText('GAME OVER', 105, 335);
-    ctx.font = '16px sans-serif'; ctx.fillText('Press R to restart', 135, 370);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = '700 32px "Chakra Petch", sans-serif'; ctx.fillText('GAME OVER', W / 2, 335);
+    ctx.font = '500 16px "Chakra Petch", sans-serif'; ctx.fillText('Press R or Launch to restart', W / 2, 370);
+    ctx.textAlign = 'left';
   }
 }
 
@@ -231,6 +258,21 @@ addEventListener('keyup', e => {
   if (e.key in keyMap) flippers[keyMap[e.key]].pressed = false;
   if (e.key === ' ') { charging = false; launch(); }
 });
+
+// On-screen buttons for touch and mouse. Launch restarts after game over.
+function holdButton(id, down, up) {
+  const el = document.getElementById(id);
+  el.addEventListener('pointerdown', e => { e.preventDefault(); el.setPointerCapture(e.pointerId); el.classList.add('active'); down(); });
+  const release = () => { if (el.classList.contains('active')) { el.classList.remove('active'); up(); } };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+holdButton('btn-left', () => flippers[0].pressed = true, () => flippers[0].pressed = false);
+holdButton('btn-right', () => flippers[1].pressed = true, () => flippers[1].pressed = false);
+holdButton('btn-launch', () => { if (gameOver) newGame(); else charging = true; },
+                         () => { if (charging) { charging = false; launch(); } });
+canvas.addEventListener('pointerdown', () => canvas.focus());
 
 let last = performance.now();
 function frame(now) {

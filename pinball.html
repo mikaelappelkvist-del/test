@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Pinball</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font-family: sans-serif;
+         display: flex; flex-direction: column; align-items: center; }
+  canvas { background: #0b1a33; margin-top: 10px; max-width: 100%; }
+  p { margin: 8px; font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+<canvas id="c" width="400" height="700"></canvas>
+<p>Space: hold to charge plunger, release to launch &middot; Z / Left: left flipper &middot; M / Right: right flipper &middot; R: restart</p>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const GRAVITY = 900;          // px/s^2
+const BALL_R = 8;
+const SUBSTEPS = 8;
+const MAX_SPEED = 1400;
+const FLIPPER_LEN = 70;
+const FLIPPER_THICK = 6;
+const FLIPPER_SPEED = 20;     // rad/s
+const LANE_X = 350;           // inner wall of the launch lane
+const auto = new URLSearchParams(location.search).has('auto');
+
+// Static walls as line segments [x1, y1, x2, y2]
+const walls = [
+  [20, 540, 20, 80],          // left wall
+  [20, 80, 80, 20],           // top-left corner
+  [80, 20, 320, 20],          // top
+  [320, 20, 380, 80],         // top-right corner (deflects launched ball)
+  [380, 80, 380, 690],        // right outer wall (launch lane)
+  [LANE_X, 200, LANE_X, 690], // launch lane inner wall
+  [20, 540, 110, 610],        // left outlane slope
+  [LANE_X, 540, 260, 610],    // right outlane slope
+  [60, 420, 60, 490],         // left slingshot post
+  [60, 490, 100, 515],
+  [310, 420, 310, 490],       // right slingshot post
+  [310, 490, 270, 515],
+];
+
+const bumpers = [
+  { x: 130, y: 190, r: 22, flash: 0 },
+  { x: 250, y: 190, r: 22, flash: 0 },
+  { x: 190, y: 290, r: 22, flash: 0 },
+  { x: 100, y: 360, r: 14, flash: 0 },
+  { x: 280, y: 360, r: 14, flash: 0 },
+];
+
+const flippers = [
+  { px: 110, py: 610, rest: 0.6, up: -0.5, angle: 0.6, omega: 0, pressed: false },
+  { px: 260, py: 610, rest: Math.PI - 0.6, up: Math.PI + 0.5, angle: Math.PI - 0.6, omega: 0, pressed: false },
+];
+
+let ball, score, lives, plungerCharge, charging, gameOver;
+
+function resetBall() {
+  ball = { x: 365, y: 670, vx: 0, vy: 0, inLane: true };
+  plungerCharge = 0;
+}
+
+function newGame() {
+  score = 0;
+  lives = 3;
+  gameOver = false;
+  charging = false;
+  resetBall();
+}
+
+// Collide ball with a capsule (segment of given thickness). surf(px, py) returns
+// the surface velocity at the contact point (used for moving flippers).
+function collideSegment(x1, y1, x2, y2, thick, restitution, surf) {
+  const dx = x2 - x1, dy = y2 - y1;
+  let t = ((ball.x - x1) * dx + (ball.y - y1) * dy) / (dx * dx + dy * dy);
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + dx * t, cy = y1 + dy * t;
+  let nx = ball.x - cx, ny = ball.y - cy;
+  const d = Math.hypot(nx, ny);
+  const minD = BALL_R + thick;
+  if (d >= minD || d === 0) return false;
+  nx /= d; ny /= d;
+  ball.x = cx + nx * minD;
+  ball.y = cy + ny * minD;
+  const [sx, sy] = surf ? surf(cx, cy) : [0, 0];
+  const rvx = ball.vx - sx, rvy = ball.vy - sy;
+  const vn = rvx * nx + rvy * ny;
+  if (vn < 0) {
+    ball.vx = rvx - (1 + restitution) * vn * nx + sx;
+    ball.vy = rvy - (1 + restitution) * vn * ny + sy;
+  }
+  return true;
+}
+
+function flipperTip(f) {
+  return [f.px + Math.cos(f.angle) * FLIPPER_LEN, f.py + Math.sin(f.angle) * FLIPPER_LEN];
+}
+
+function step(dt) {
+  // Flippers
+  for (const f of flippers) {
+    const target = f.pressed ? f.up : f.rest;
+    const diff = target - f.angle;
+    const maxMove = FLIPPER_SPEED * dt;
+    const move = Math.max(-maxMove, Math.min(maxMove, diff));
+    f.omega = move / dt;
+    f.angle += move;
+  }
+
+  // Ball
+  ball.vy += GRAVITY * dt;
+  const sp = Math.hypot(ball.vx, ball.vy);
+  if (sp > MAX_SPEED) { ball.vx *= MAX_SPEED / sp; ball.vy *= MAX_SPEED / sp; }
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
+
+  // Holding the ball on the plunger
+  if (ball.inLane && ball.y > 670) { ball.y = 670; ball.vy = 0; ball.vx = 0; }
+  if (ball.x < LANE_X - BALL_R) ball.inLane = false;
+
+  for (const w of walls) collideSegment(w[0], w[1], w[2], w[3], 2, 0.5);
+
+  for (const b of bumpers) {
+    let nx = ball.x - b.x, ny = ball.y - b.y;
+    const d = Math.hypot(nx, ny);
+    if (d < b.r + BALL_R && d > 0) {
+      nx /= d; ny /= d;
+      ball.x = b.x + nx * (b.r + BALL_R);
+      ball.y = b.y + ny * (b.r + BALL_R);
+      const vn = ball.vx * nx + ball.vy * ny;
+      if (vn < 0) { ball.vx -= 2 * vn * nx; ball.vy -= 2 * vn * ny; }
+      ball.vx += nx * 250; ball.vy += ny * 250;   // kick
+      if (b.flash <= 0) score += b.r > 20 ? 100 : 50;
+      b.flash = 0.15;
+    }
+  }
+
+  for (const f of flippers) {
+    const [tx, ty] = flipperTip(f);
+    collideSegment(f.px, f.py, tx, ty, FLIPPER_THICK, 0.3,
+      (cx, cy) => [-f.omega * (cy - f.py), f.omega * (cx - f.px)]);
+  }
+
+  // Drain
+  if (ball.y > H + BALL_R) {
+    lives--;
+    if (lives <= 0) { gameOver = true; lives = 0; }
+    resetBall();
+  }
+}
+
+function autoPlay() {
+  // Demo mode: launch automatically and flip when the ball is near a flipper.
+  if (ball.inLane && ball.y >= 670 && !gameOver) {
+    if (plungerCharge < 1) charging = true; else { charging = false; launch(); }
+  }
+  flippers[0].pressed = ball.x > 135 && ball.x < 190 && ball.y > 560 && ball.y < 640 && ball.vy > 0;
+  flippers[1].pressed = ball.x >= 180 && ball.x < 235 && ball.y > 560 && ball.y < 640 && ball.vy > 0;
+}
+
+function launch() {
+  if (ball.inLane && ball.y >= 669) ball.vy = -(700 + plungerCharge * 700);
+  plungerCharge = 0;
+}
+
+function update(dt) {
+  if (auto) autoPlay();
+  if (charging) plungerCharge = Math.min(1, plungerCharge + dt * 1.2);
+  for (const b of bumpers) b.flash -= dt;
+  if (gameOver) return;
+  const h = dt / SUBSTEPS;
+  for (let i = 0; i < SUBSTEPS; i++) step(h);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#7fb3ff';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  for (const w of walls) {
+    ctx.beginPath(); ctx.moveTo(w[0], w[1]); ctx.lineTo(w[2], w[3]); ctx.stroke();
+  }
+
+  for (const b of bumpers) {
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = b.flash > 0 ? '#fff6a0' : '#e0457b';
+    ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#ffcc33';
+  ctx.lineWidth = FLIPPER_THICK * 2;
+  for (const f of flippers) {
+    const [tx, ty] = flipperTip(f);
+    ctx.beginPath(); ctx.moveTo(f.px, f.py); ctx.lineTo(tx, ty); ctx.stroke();
+  }
+
+  // Plunger
+  const py = 680 + plungerCharge * 15;
+  ctx.fillStyle = '#999';
+  ctx.fillRect(LANE_X + 6, py, 22, H - py);
+
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2);
+  ctx.fillStyle = '#ddd'; ctx.fill();
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('Score: ' + score, 30, 50);
+  ctx.fillText('Balls: ' + lives, 250, 50);
+  if (gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 280, W, 120);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px sans-serif';
+    ctx.fillText('GAME OVER', 105, 335);
+    ctx.font = '16px sans-serif'; ctx.fillText('Press R to restart', 135, 370);
+  }
+}
+
+const keyMap = { z: 0, Z: 0, ArrowLeft: 0, m: 1, M: 1, ArrowRight: 1 };
+addEventListener('keydown', e => {
+  if (e.key in keyMap) flippers[keyMap[e.key]].pressed = true;
+  if (e.key === ' ') { charging = true; e.preventDefault(); }
+  if (e.key === 'r' || e.key === 'R') newGame();
+});
+addEventListener('keyup', e => {
+  if (e.key in keyMap) flippers[keyMap[e.key]].pressed = false;
+  if (e.key === ' ') { charging = false; launch(); }
+});
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.033, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+newGame();
+window.game = { get ball() { return ball; }, get score() { return score; },
+                get lives() { return lives; }, get gameOver() { return gameOver; } };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
